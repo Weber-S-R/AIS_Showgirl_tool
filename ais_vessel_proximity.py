@@ -9,15 +9,17 @@
 # ---------------------------------------------------------------------------
 #
 # Purpose: Tracks AIS vessel positions and lists ships within a given radius (NM)
-#          of a reference position (e.g. a vessel or waypoint). Uses live AIS data
-#          from AIS Stream (https://aisstream.io) WebSocket API; requires free API key.
+#          of a reference position (e.g. a vessel or waypoint). Aggregates two data sources:
+#          (1) AIS Stream – live AIS WebSocket (free API key); (2) Global Fishing Watch –
+#          vessel presence in area over last 96 hours (free token, non-commercial).
 # Reference: Pass --lat and --lon for your reference position (decimal degrees).
 #            Default lat/lon in this script are example values only; override for any vessel.
 #
 # Dependencies (install before running):
 #   - Python 3
 #   - websockets:  pip install websockets
-#   - AIS Stream API key (free): sign in at https://aisstream.io, create key at https://aisstream.io/apikeys
+#   - AIS Stream API key (free): https://aisstream.io → https://aisstream.io/apikeys
+#   - GFW API token (optional, free): https://globalfishingwatch.org/our-apis/tokens (adds 96h presence)
 # See README.md in this repo for full setup and usage.
 
 import argparse
@@ -26,7 +28,10 @@ import json
 import math
 import os
 import sys
-from datetime import datetime, timezone
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone, timedelta
 
 try:
     import websockets
@@ -38,8 +43,11 @@ except ImportError:
 # --- Example default reference position (override with --lat / --lon for your vessel) ---
 DEFAULT_REF_LAT = 25.0 + 49.435 / 60.0   # 25.82392 (example)
 DEFAULT_REF_LON = -(15.0 + 44.755 / 60.0)  # -15.74592 (example)
-DEFAULT_RADIUS_NM = 25.0
+DEFAULT_RADIUS_NM = 100.0
 AIS_STREAM_URL = "wss://stream.aisstream.io/v0/stream"
+GFW_REPORT_URL = "https://gateway.api.globalfishingwatch.org/v3/4wings/report"
+GFW_PRESENCE_DATASET = "public-global-presence:latest"
+GFW_HOURS_LOOKBACK = 96
 
 # Earth radius in meters (for haversine)
 R_M = 6_371_000
@@ -59,7 +67,7 @@ def haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R_M * c * M_TO_NM
 
 
-def bbox_around(lat: float, lon: float, margin_deg: float = 0.5):
+def bbox_around(lat: float, lon: float, margin_deg: float = 1.0):
     """Return AIS Stream style bbox [[lat1, lon1], [lat2, lon2]] around (lat, lon)."""
     return [
         [lat - margin_deg, lon - margin_deg],
@@ -73,6 +81,80 @@ def _clamp_coord(lat: float, lon: float):
     lat = max(-90.0, min(90.0, lat))
     lon = max(-180.0, min(180.0, lon))
     return lat, lon, (orig_lat != lat or orig_lon != lon)
+
+
+def _geojson_bbox_polygon(lat: float, lon: float, margin_deg: float = 1.0) -> dict:
+    """Return GeoJSON Polygon for bbox around (lat, lon). Coordinates [lon, lat] per point."""
+    min_lat = max(-90.0, lat - margin_deg)
+    max_lat = min(90.0, lat + margin_deg)
+    min_lon = max(-180.0, lon - margin_deg)
+    max_lon = min(180.0, lon + margin_deg)
+    # Exterior ring: closed polygon (first point = last point)
+    ring = [
+        [min_lon, min_lat],
+        [max_lon, min_lat],
+        [max_lon, max_lat],
+        [min_lon, max_lat],
+        [min_lon, min_lat],
+    ]
+    return {"type": "Polygon", "coordinates": [ring]}
+
+
+def fetch_gfw_recent_presence(ref_lat: float, ref_lon: float, gfw_token: str) -> dict:
+    """
+    Fetch vessel presence in area from Global Fishing Watch (last 96h). Non-commercial use.
+    Returns dict: ok (bool), count (int or None), error (str or None).
+    """
+    if not gfw_token or not gfw_token.strip():
+        return {"ok": False, "count": None, "error": "no token"}
+    gfw_token = gfw_token.strip()
+    end_utc = datetime.now(timezone.utc)
+    start_utc = end_utc - timedelta(hours=GFW_HOURS_LOOKBACK)
+    date_range = f"{start_utc.strftime('%Y-%m-%dT%H:%M:%S.000Z')},{end_utc.strftime('%Y-%m-%dT%H:%M:%S.000Z')}"
+    geojson = _geojson_bbox_polygon(ref_lat, ref_lon, margin_deg=1.0)
+    query = (
+        f"format=JSON"
+        f"&datasets[0]={GFW_PRESENCE_DATASET}"
+        f"&date-range={urllib.parse.quote(date_range)}"
+        f"&temporal-resolution=ENTIRE"
+        f"&spatial-aggregation=true"
+        f"&group-by=VESSEL_ID"
+    )
+    url = f"{GFW_REPORT_URL}?{query}"
+    body = json.dumps({"geojson": geojson}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {gfw_token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8")
+            err_json = json.loads(err_body)
+            msg = err_json.get("detail", err_json.get("error", str(e)))
+        except Exception:
+            msg = str(e)
+        return {"ok": False, "count": None, "error": msg}
+    except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
+        return {"ok": False, "count": None, "error": str(e)}
+    # GFW report JSON: may have "entries" list or "data" / "total"
+    count = 0
+    if isinstance(data, list):
+        count = len(data)
+    elif isinstance(data, dict):
+        entries = data.get("entries", data.get("data", []))
+        if isinstance(entries, list):
+            count = len(entries)
+        else:
+            count = int(data.get("total", 0)) if isinstance(data.get("total"), (int, float)) else 0
+    return {"ok": True, "count": count, "error": None}
 
 
 async def run_proximity(
@@ -184,6 +266,23 @@ async def run_proximity(
     return {"seen": seen, "api_error": api_error}
 
 
+def print_gfw_summary(ref_lat: float, ref_lon: float, gfw_token: str) -> None:
+    """Fetch and print GFW vessel presence (last 96h) in area; optional second data source."""
+    result = fetch_gfw_recent_presence(ref_lat, ref_lon, gfw_token)
+    print("-" * 60)
+    if not gfw_token or not gfw_token.strip():
+        print("GFW (last 96h): skipped (no token). Get free token: https://globalfishingwatch.org/our-apis/tokens")
+        return
+    if not result["ok"]:
+        print(f"GFW (last 96h): error — {result['error']}")
+        return
+    count = result["count"]
+    if count is not None and count > 0:
+        print(f"GFW (last 96h): vessel presence in area: Yes — {count} vessel(s) in last 96 hours")
+    else:
+        print("GFW (last 96h): vessel presence in area: No vessels in last 96 hours")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="List ships near a reference position (e.g. Mara and The Showgirl). Uses live AIS data."
@@ -216,6 +315,11 @@ def main() -> None:
         "--api-key",
         default=os.environ.get("AISSTREAM_API_KEY", "").strip(),
         help="AIS Stream API key (or set AISSTREAM_API_KEY)",
+    )
+    ap.add_argument(
+        "--gfw-token",
+        default=os.environ.get("GFW_API_TOKEN", "").strip(),
+        help="Global Fishing Watch API token (optional; adds 96h vessel presence). Set GFW_API_TOKEN",
     )
     args = ap.parse_args()
 
@@ -281,6 +385,8 @@ def main() -> None:
         )
         if result.get("api_error"):
             sys.exit(1)
+        # Second source: GFW vessel presence in area (last 96h)
+        print_gfw_summary(ref_lat, ref_lon, args.gfw_token)
     except KeyboardInterrupt:
         print("\nStopped.")
         sys.exit(0)

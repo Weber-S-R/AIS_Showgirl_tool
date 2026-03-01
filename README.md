@@ -2,7 +2,7 @@
 
 **Made for : Mara and 'The Showgirl'**
 
-Python AIS tool to find ships near Mara and The Showgirl and help ensure safe transit for the cocoon of happiness. Lists vessels (name, heading, distance) within a chosen radius of a reference position using live AIS data. No hardcoded paths or machine-specific settings—works on any system with the dependencies below.
+Python AIS tool to find ships near Mara and The Showgirl and help ensure safe transit for the cocoon of happiness. Lists vessels (name, heading, distance) within a chosen radius of a reference position. **Aggregates two data sources:** (1) **AIS Stream** — live AIS; (2) **Global Fishing Watch** — vessel presence in the area over the last 96 hours (optional free token). No hardcoded paths or machine-specific settings—works on any system with the dependencies below.
 
 ---
 
@@ -19,9 +19,10 @@ Python AIS tool to find ships near Mara and The Showgirl and help ensure safe tr
    python ais_vessel_proximity.py
    ```
 3. When asked, paste your AIS Stream API key (get a free one at https://aisstream.io/apikeys).
-4. For position: press **Enter** to use the default (Mara / The Showgirl), or type new latitude and longitude when prompted.
+4. (Optional) Set a Global Fishing Watch token to add "vessel presence in area (last 96h)": get a free token at https://globalfishingwatch.org/our-apis/tokens and set `GFW_API_TOKEN` or use `--gfw-token`.
+5. For position: press **Enter** to use the default (Mara / The Showgirl), or type new latitude and longitude when prompted.
 
-The script will then check for ships nearby and print results. You can press **Ctrl+C** anytime to stop.
+The script will then check for ships nearby (live AIS) and, if a GFW token is set, show recent vessel presence in the area. You can press **Ctrl+C** anytime to stop.
 
 ---
 
@@ -35,8 +36,9 @@ The script will then check for ships nearby and print results. You can press **C
 | **GitHub account** (optional) | Easiest way to sign in to AIS Stream | [github.com](https://github.com) — free. Used only to log in to AIS Stream; no code or repo access. |
 | **AIS Stream account** | Required to get an API key | Free sign-up at [aisstream.io](https://aisstream.io) (see steps below). |
 | **AIS Stream API key** | Authenticate with the live AIS feed | Created after sign-up at [aisstream.io/apikeys](https://aisstream.io/apikeys). |
+| **GFW API token** (optional) | Adds vessel presence in area over last 96h | Free token at [globalfishingwatch.org/our-apis/tokens](https://globalfishingwatch.org/our-apis/tokens) (non-commercial use). |
 
-**No payment, no AIS hardware, no credit card.** The script uses only the above.
+**No payment, no AIS hardware, no credit card.** The script uses only the above. GFW is optional but recommended for a fuller picture when AIS Stream has no coverage (e.g. open Atlantic).
 
 ---
 
@@ -83,7 +85,8 @@ Details are in the official docs: [aisstream.io/documentation](https://aisstream
 Clone this repo (or download the script), then from the repo directory:
 
 - **Reference position** (optional): `--lat` and `--lon` in decimal degrees. If omitted, built-in example defaults are used; override these for your own vessel or waypoint.
-- **Radius**: `--radius` in nautical miles (default 25).
+- **Radius**: `--radius` in nautical miles (default 100).
+- **GFW token** (optional): `--gfw-token` or env `GFW_API_TOKEN` to add 96h vessel presence in area.
 - **Collection time**: `--collect` in seconds (default 60).
 - **API key**: either set the environment variable or use `--api-key`.
 
@@ -134,9 +137,10 @@ python ais_vessel_proximity.py
 |----------|---------|---------|
 | `--lat LAT` | Reference latitude (decimal degrees) | Example value in script |
 | `--lon LON` | Reference longitude (decimal degrees) | Example value in script |
-| `--radius NM` | Radius in nautical miles | 25 |
+| `--radius NM` | Radius in nautical miles | 100 |
 | `--collect SECONDS` | How long to listen for AIS messages | 60 |
 | `--api-key KEY` | AIS Stream API key (or use env `AISSTREAM_API_KEY`) | (none) |
+| `--gfw-token TOKEN` | GFW API token for 96h vessel presence (or use env `GFW_API_TOKEN`) | (none) |
 
 ### Examples
 
@@ -157,10 +161,11 @@ python ais_vessel_proximity.py
 The script prints:
 
 - Reference position used.
-- Number of vessels within the radius (for the collection window).
+- **Live (AIS Stream):** Number of vessels within the radius (for the collection window).
 - For each vessel: **name**, distance (NM), **heading** (°), speed (if available), MMSI, position, and timestamp.
+- **GFW (last 96h):** If a GFW token is set, whether there was vessel presence in the area in the last 96 hours (and how many vessels), or an error/skip message.
 
-Vessels are sorted by distance (closest first). If no vessels are in range, you'll see a short message and a tip to try a larger radius or run again later.
+Vessels are sorted by distance (closest first). If no vessels are in range from AIS Stream, you'll see a short message and a tip to try a larger radius or run again later. GFW gives a second, delayed view so "no live data" does not mean "no traffic recently."
 
 ---
 
@@ -173,9 +178,10 @@ Vessels are sorted by distance (closest first). If no vessels are in range, you'
 
 ---
 
-## Data source
+## Data sources (aggregated)
 
-- **AIS Stream** ([aisstream.io](https://aisstream.io)) — WebSocket API; service is in beta with no SLA. The script subscribes to a bounding box around your reference point, computes distances (haversine) in nautical miles, and filters to the requested radius.
+- **AIS Stream** ([aisstream.io](https://aisstream.io)) — Live AIS WebSocket; service is in beta with no SLA. The script subscribes to a bounding box around your reference point, computes distances (haversine) in nautical miles, and filters to the requested radius. **Coverage can be sparse or absent in open ocean** (e.g. mid-Atlantic); "0 vessels" there often means "no terrestrial AIS feed," not "no ships."
+- **Global Fishing Watch** ([globalfishingwatch.org](https://globalfishingwatch.org)) — Optional; vessel presence in the area over the **last 96 hours** (AIS-based, non-commercial). Free token at [globalfishingwatch.org/our-apis/tokens](https://globalfishingwatch.org/our-apis/tokens). Adds a second layer: "was there vessel activity in this area recently?" even when live AIS has no coverage. For **real-time** open-ocean coverage, a paid satellite-backed source (e.g. VesselAPI, MarineTraffic) would be needed; this tool focuses on free sources.
 
 ---
 
@@ -184,7 +190,8 @@ Vessels are sorted by distance (closest first). If no vessels are in range, you'
 - **"This script needs the 'websockets' package"** → Run `pip install websockets` (or `pip install -r requirements.txt`).
 - **"No API key set"** → Sign in at [aisstream.io](https://aisstream.io/authenticate), create a key at [aisstream.io/apikeys](https://aisstream.io/apikeys), then pass it with `--api-key` or paste when prompted.
 - **"Api Key Is Not Valid"** (from AIS Stream) → Create a new key at [aisstream.io/apikeys](https://aisstream.io/apikeys) and use it.
-- **0 vessels** → AIS coverage can be sparse in open ocean; try a larger radius or longer `--collect`, or run at a different time.
+- **0 vessels (live)** → AIS Stream coverage can be sparse in open ocean; add a GFW token to see recent (96h) vessel presence in the area. Try a larger radius or longer `--collect`, or run at a different time.
+- **GFW error / skipped** → Get a free token at [globalfishingwatch.org/our-apis/tokens](https://globalfishingwatch.org/our-apis/tokens) and set `GFW_API_TOKEN` or `--gfw-token`; GFW is for non-commercial use.
 - **Could not connect** → Check your internet connection; if it still fails, see https://aisstream.io for service status.
 - **Your API key was not accepted** → Get a new key at https://aisstream.io/apikeys and paste it when the script asks, or use `--api-key YOUR_NEW_KEY`.
 
