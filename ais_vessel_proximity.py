@@ -192,6 +192,80 @@ def print_gfw_summary(ref_lat: float, ref_lon: float, gfw_token: str) -> None:
 AIS_WORLD_BBOX = [[-90.0, -180.0], [90.0, 180.0]]
 
 
+def _geojson_bbox_polygon(lat: float, lon: float, margin_deg: float = 1.0) -> dict:
+    """Return GeoJSON Polygon for bbox around (lat, lon). Coordinates [lon, lat] per point."""
+    min_lat = max(-90.0, lat - margin_deg)
+    max_lat = min(90.0, lat + margin_deg)
+    min_lon = max(-180.0, lon - margin_deg)
+    max_lon = min(180.0, lon + margin_deg)
+    # Exterior ring: closed polygon (first point = last point)
+    ring = [
+        [min_lon, min_lat],
+        [max_lon, min_lat],
+        [max_lon, max_lat],
+        [min_lon, max_lat],
+        [min_lon, min_lat],
+    ]
+    return {"type": "Polygon", "coordinates": [ring]}
+
+
+def fetch_gfw_recent_presence(ref_lat: float, ref_lon: float, gfw_token: str) -> dict:
+    """
+    Fetch vessel presence in area from Global Fishing Watch (last 96h). Non-commercial use.
+    Returns dict: ok (bool), count (int or None), error (str or None).
+    """
+    if not gfw_token or not gfw_token.strip():
+        return {"ok": False, "count": None, "error": "no token"}
+    gfw_token = gfw_token.strip()
+    end_utc = datetime.now(timezone.utc)
+    start_utc = end_utc - timedelta(hours=GFW_HOURS_LOOKBACK)
+    date_range = f"{start_utc.strftime('%Y-%m-%dT%H:%M:%S.000Z')},{end_utc.strftime('%Y-%m-%dT%H:%M:%S.000Z')}"
+    geojson = _geojson_bbox_polygon(ref_lat, ref_lon, margin_deg=1.0)
+    query = (
+        f"format=JSON"
+        f"&datasets[0]={GFW_PRESENCE_DATASET}"
+        f"&date-range={urllib.parse.quote(date_range)}"
+        f"&temporal-resolution=ENTIRE"
+        f"&spatial-aggregation=true"
+        f"&group-by=VESSEL_ID"
+    )
+    url = f"{GFW_REPORT_URL}?{query}"
+    body = json.dumps({"geojson": geojson}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {gfw_token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8")
+            err_json = json.loads(err_body)
+            msg = err_json.get("detail", err_json.get("error", str(e)))
+        except Exception:
+            msg = str(e)
+        return {"ok": False, "count": None, "error": msg}
+    except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
+        return {"ok": False, "count": None, "error": str(e)}
+    # GFW report JSON: may have "entries" list or "data" / "total"
+    count = 0
+    if isinstance(data, list):
+        count = len(data)
+    elif isinstance(data, dict):
+        entries = data.get("entries", data.get("data", []))
+        if isinstance(entries, list):
+            count = len(entries)
+        else:
+            count = int(data.get("total", 0)) if isinstance(data.get("total"), (int, float)) else 0
+    return {"ok": True, "count": count, "error": None}
+
+
 async def run_proximity(
     ref_lat: float,
     ref_lon: float,
@@ -364,6 +438,23 @@ async def run_proximity(
                 for dist_nm, name, mmsi, lat, lon in closest_outside[:3]:
                     print(f"    {dist_nm:.0f} NM — {name}  MMSI {mmsi}  ({lat:.4f}, {lon:.4f})")
         print("  You can try a larger radius (e.g. --radius 50) or run again later.")
+
+
+def print_gfw_summary(ref_lat: float, ref_lon: float, gfw_token: str) -> None:
+    """Fetch and print GFW vessel presence (last 96h) in area; optional second data source."""
+    result = fetch_gfw_recent_presence(ref_lat, ref_lon, gfw_token)
+    print("-" * 60)
+    if not gfw_token or not gfw_token.strip():
+        print("GFW (last 96h): skipped (no token). Get free token: https://globalfishingwatch.org/our-apis/tokens")
+        return
+    if not result["ok"]:
+        print(f"GFW (last 96h): error — {result['error']}")
+        return
+    count = result["count"]
+    if count is not None and count > 0:
+        print(f"GFW (last 96h): vessel presence in area: Yes — {count} vessel(s) in last 96 hours")
+    else:
+        print("GFW (last 96h): vessel presence in area: No vessels in last 96 hours")
 
 
 def main() -> None:

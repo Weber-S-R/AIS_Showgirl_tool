@@ -222,6 +222,9 @@ Subtle but important difference:
 - **"Api Key Is Not Valid"** (from AIS Stream) → Create a new key at [aisstream.io/apikeys](https://aisstream.io/apikeys) and use it.
 - **"No message in 8s after subscribe"** → The server may have rejected the subscription or the regional bbox has no coverage. Try **`--world`** to subscribe to the global stream; if you still get no messages, verify your API key at [aisstream.io/apikeys](https://aisstream.io/apikeys).
 - **0 vessels (live)** → In open ocean the regional subscription often returns 0 messages. Use **`--world`** so the script receives the global stream and filters by your `--radius`. You can also try a larger `--radius` or longer `--collect`. GFW (if token set) still shows 96h presence in the area.
+- **GFW error / skipped** → Get a free token at [globalfishingwatch.org/our-apis/tokens](https://globalfishingwatch.org/our-apis/tokens) and set `GFW_API_TOKEN` or `--gfw-token`; GFW is for non-commercial use.
+- **Could not connect** → Check your internet connection; if it still fails, see https://aisstream.io for service status.
+- **Your API key was not accepted** → Get a new key at https://aisstream.io/apikeys and paste it when the script asks, or use `--api-key YOUR_NEW_KEY`.
 
 ---
 
