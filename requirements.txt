@@ -1,1 +1,4 @@
+# AIS Showgirl tool – Python dependencies
+# Install: pip install -r requirements.txt
+
 websockets>=10.0
